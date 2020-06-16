@@ -23,7 +23,7 @@ ROLLBACK=0
 
 # Constants
 export MATCHED_JAR_FILE_NAME=hadoop-azure
-GITHUB_API_ROOT_URI=https://api.github.com/repos/jamesbak/abfs_backport
+GITHUB_API_ROOT_URI=https://api.github.com/repos/Azure/abfs-backport
 CURR_TIME=$(date "+%Y-%m-%d-%H-%M-%S")
 BACKUP_SUFFIX=".original_${CURR_TIME}"
 JAR_EXTENSION=".jar"
