@@ -5,31 +5,40 @@
 # To fully patch a cluster, this script must be run on EVERY node to update the local filesystem. On ONE NODE ONLY
 # the -a switch must be specified to patch the HDFS contents.
 
-which jq > /dev/null
-if [ $? -ne 0 ]; then
-
-    echo "This script requires jq to run. Please install using preferred package manager"
-    exit 1
-fi
-
-
 # Parameters
 APPLY_HDFS_PATCH=0
-HDFS_USER=
+HDFS_USER=hdfs
 DIR_PREFIX=
 HDFS_DIR_PREFIX=
 ROLLBACK=0
 
+TARGET_RELEASE="HDP-2.5.2"
+
 
 # Constants
 export MATCHED_JAR_FILE_NAME=hadoop-azure
-GITHUB_API_ROOT_URI=https://api.github.com/repos/Azure/abfs-backport
+GITHUB_API_ROOT_URI=https://api.github.com/repos/jamesbak/abfs_backport
 CURR_TIME=$(date "+%Y-%m-%d-%H-%M-%S")
 BACKUP_SUFFIX=".original_${CURR_TIME}"
 JAR_EXTENSION=".jar"
 #
 JAR_FIND_SUFFIX=""
 
+checkstatus() {
+    
+     if [ $? -ne 0 ]; then
+        echo "DEBUG... $1 failed"
+    else
+        echo "DEBUG... $1 success"
+    fi
+}
+
+which jq > /dev/null
+if [ $? -ne 0 ]; then
+
+    echo "This script requires jq to run. Please install using preferred package manager"
+    exit 1
+fi
 
 while getopts ":a?hu:p:P:R:" options
 do
@@ -48,11 +57,12 @@ do
             ;;
         R)
             ROLLBACK=1
-            if [ -z ${OPTARG} ]; then
+            ROLLBACK_VERSION=${OPTARG}
+            if [ -z ${ROLLBACK_VERSION} ]; then
                 echo "Exiting; Backup version parameter is required for rollback"
                 exit 4
             fi
-            BACKUP_SUFFIX=".original_${OPTARG}"
+            BACKUP_SUFFIX=".original_${ROLLBACK_VERSION}"
             ;;
         *|?|h)
             echo "Usage: $0 [-a] [-u HDFS_USER] [-t TARGET_VERSION] [-p DIRECTORY_PREFIX] [-P HDFS_DIRECTORY_PREFIX] [-R] [-?]"
@@ -64,7 +74,8 @@ do
             echo "                  Specifies a prefix that is specific to the Hadoop distro & version to search for files to patch."
             echo "  -P HDFS_DIRECTORY_PREFIX "
             echo "                  Specifies a prefix that is specific to the Hadoop distro & version to search on HDFS for files to patch."
-            echo "  -R              Rollback installation. Restores previously backed up versions of hadoop-azure jar file. Rollback for HDFS "
+            echo "  -R ROLLBACK_VERSION "
+            echo "                  Rollback installation. Restores previously backed up versions of hadoop-azure jar file. Rollback for HDFS "
             echo "                  should follow same model as deployment. Specify the backup version for the rollback. Ex: Specify 2020-06-07-10-10-10 "
             echo "                  for the backup file named hadoop-azure.*.jar.original_2020-06-07-10-10-10"
             exit 1
@@ -75,8 +86,6 @@ done
 
 [[ "${DIR_PREFIX}" != */ ]] && DIR_PREFIX="${DIR_PREFIX}/"
 [[ "${HDFS_DIR_PREFIX}" != */ ]] && HDFS_DIR_PREFIX="${HDFS_DIR_PREFIX}/"
-
-TARGET_RELEASE="HDP-2.5.2"
 
 
 # Confirm rollback
@@ -127,6 +136,7 @@ if [ $ROLLBACK -eq 0 ]; then
     if [ -e $LOCAL_PATCH_PATH ]; then 
 
         rm $LOCAL_PATCH_PATH; 
+        checkstatus "rm $LOCAL_PATCH_PATH;"
     fi
     echo ""
     echo "Downloading $REMOTE_PATCH_PATH to $LOCAL_PATCH_PATH"
@@ -151,16 +161,20 @@ do
         if [[ ! -e "${GZ}${BACKUP_SUFFIX}" ]]; then
 
             cp "$GZ" "${GZ}${BACKUP_SUFFIX}"
+            checkstatus "cp $GZ ${GZ}${BACKUP_SUFFIX}"
         fi
 
         ARCHIVE_DIR="${GZ}.dir"
         if [[ -d $ARCHIVE_DIR ]]; then
 
             rm -rf "$ARCHIVE_DIR"
+            checkstatus "rm -rf "$ARCHIVE_DIR""
         fi
         mkdir "$ARCHIVE_DIR"
+        checkstatus "mkdir $ARCHIVE_DIR"
         echo "    tar -C "$ARCHIVE_DIR" -zxf $GZ"
         tar -C "$ARCHIVE_DIR" -zxf "$GZ"
+        checkstatus "tar -C $ARCHIVE_DIR -zxf $GZ"
     else
 
         # Rollback changes
@@ -168,7 +182,9 @@ do
 
             echo "    cp ${GZ}${BACKUP_SUFFIX} $GZ"
             cp "${GZ}${BACKUP_SUFFIX}" "$GZ" 
+            checkstatus "cp ${GZ}${BACKUP_SUFFIX} $GZ"
             rm "${GZ}${BACKUP_SUFFIX}"
+            checkstatus "rm ${GZ}${BACKUP_SUFFIX}"
         fi
     fi
 done
@@ -181,20 +197,29 @@ do
     echo $DST
     if [ $ROLLBACK -eq 0 ]; then
 
+        # Backup original file (jar or symlink) if not already backed up
+        if [[ ! -e "${DST}${BACKUP_SUFFIX}" ]]; then
+
+            cp "$DST" "${DST}${BACKUP_SUFFIX}"
+            checkstatus "cp $DST ${DST}${BACKUP_SUFFIX}"
+        fi
+
         # Different handling for symlink or real file
         if [[ ! -h "$DST" ]]; then
 
-            # Backup original file (jar or symlink) if not already backed up
-            if [[ ! -e "${DST}${BACKUP_SUFFIX}" ]]; then
-
-                cp "$DST" "${DST}${BACKUP_SUFFIX}"
-            fi
-
             # Replace with patched JAR
             rm -f "$DST"
+            checkstatus "rm -f $DST"
             DST="$(dirname "$DST")/$PATCHED_JAR_FILE_NAME.jar"
             echo "    cp $LOCAL_PATCH_PATH $DST"
             cp "$LOCAL_PATCH_PATH" "$DST"
+            checkstatus "cp $LOCAL_PATCH_PATH $DST"
+        else
+
+            # For symlink, assume the target will be replaced with the correctly named file. Just update the link.
+            NEW_TARGET="$(dirname $(readlink "$DST"))/$PATCHED_JAR_FILE_NAME.jar"
+            ln -sfn "$NEW_TARGET" "$DST"
+            checkstatus "ln -sfn NEW_TARGET DST"
         fi
         
     else
@@ -208,13 +233,16 @@ do
             DST_ORIG=$(dirname "$DST")/$(basename "$DST" $BACKUP_SUFFIX)
             echo "    cp ${DST} $DST_ORIG"
             cp "${DST}" "$DST_ORIG"
+            checkstatus "cp ${DST} $DST_ORIG"
             rm "${DST}"
+            checkstatus "rm ${DST}"
 
         elif [[ "$DST_EXTENSION" == "$JAR_EXTENSION" ]]; then
 
             # hadoop-azure*.jar -> rm
             echo "    rm $DST"
             rm "$DST"
+            checkstatus "rm $DST"
         fi
     fi
 done
@@ -234,12 +262,15 @@ if [ $APPLY_HDFS_PATCH -gt 0 ]; then
             if [ $? -ne 0 ]; then
 
                 sudo -u $HDFS_USER hadoop fs -cp "$HDST" "${HDST}${BACKUP_SUFFIX}"
+                checkstatus "hadoop fs -cp $HDST ${HDST}${BACKUP_SUFFIX})"
             fi
 
             sudo -u $HDFS_USER hadoop fs -rm $HDST
+            checkstatus "hadoop fs -rm $HDST)"
             HDST="$(dirname "$HDST")/$PATCHED_JAR_FILE_NAME.jar"
             echo "    hadoop fs -put -f $LOCAL_PATCH_PATH $HDST"
             sudo -u $HDFS_USER hadoop fs -put -f "$LOCAL_PATCH_PATH" "$HDST"
+            checkstatus "hadoop fs -put -f $LOCAL_PATCH_PATH $HDST"
         else
 
             # Rollback changes - need to handle 2 cases; hadoop-azure*.jar.original -> hadoop-azure*.jar & hadoop-azure*.jar -> rm
@@ -251,13 +282,16 @@ if [ $APPLY_HDFS_PATCH -gt 0 ]; then
                 HDST_ORIG=$(dirname "$HDST")/$(basename "$HDST" $BACKUP_SUFFIX)
                 echo "    hadoop fs -cp $HDST $HDST_ORIG"
                 sudo -u $HDFS_USER hadoop fs -cp "$HDST" "$HDST_ORIG" 
+                checkstatus "hadoop fs -cp $HDST $HDST_ORIG"
                 sudo -u $HDFS_USER hadoop fs -rm "$HDST_ORIG"
+                checkstatus "hadoop fs -rm $HDST_ORIG"
 
             elif [[ "$HDST_EXTENSION" == "$JAR_EXTENSION" ]]; then
 
                 # hadoop-azure*.jar -> rm
                 echo "    hadoop fs -rm $HDST"
                 sudo -u $HDFS_USER hadoop fs -rm "$HDST"
+                checkstatus "hadoop fs -rm $HDST"
             fi
         fi
     done
@@ -273,7 +307,9 @@ if [ $ROLLBACK -eq 0 ]; then
 
         echo "    tar -czf $GZ -C ${GZ}.dir"
         tar -czf "$GZ" -C "${GZ}.dir" .
+        checkstatus "    tar -czf $GZ -C ${GZ}.dir"
         rm -rf "${GZ}.dir"
+        checkstatus "rm -rf ${GZ}.dir"
     done
 fi
 
@@ -293,6 +329,7 @@ if [ $APPLY_HDFS_PATCH -gt 0 ]; then
             if [ $? -ne 0 ]; then
 
                 sudo -u $HDFS_USER hadoop fs -cp "$HGZ" "${HGZ}${BACKUP_SUFFIX}"
+                checkstatus "hadoop fs -cp $HGZ ${HGZ}${BACKUP_SUFFIX}"
             fi
 
             # Get the archive, update it with the new jar, repackage the archive & copy it to HDFS
@@ -303,15 +340,20 @@ if [ $APPLY_HDFS_PATCH -gt 0 ]; then
             if [[ -e $LOCAL_TAR_FILE ]]; then
 
                 rm -f $LOCAL_TAR_FILE;
+                checkstatus "rm -f $LOCAL_TAR_FILE;"
             fi
             sudo -u $HDFS_USER hadoop fs -copyToLocal "$HGZ" "$LOCAL_TAR_FILE"
+            checkstatus "sudo -u $HDFS_USER hadoop fs -copyToLocal $HGZ $LOCAL_TAR_FILE"
 
             if [[ -d $ARCHIVE_DIR ]]; then
 
                 rm -rf $ARCHIVE_DIR
+                checkstatus "rm -rf $ARCHIVE_DIR"
             fi
             mkdir $ARCHIVE_DIR
+            checkstatus "mkdir $ARCHIVE_DIR"
             tar -xzf $LOCAL_TAR_FILE -C $ARCHIVE_DIR
+            checkstatus "tar -xzf $LOCAL_TAR_FILE -C $ARCHIVE_DIR"
 
             for DST in $(find $ARCHIVE_DIR -name "$MATCHED_JAR_FILE_NAME*.jar" -a ! -name "*datalake*")
             do
@@ -320,31 +362,42 @@ if [ $APPLY_HDFS_PATCH -gt 0 ]; then
                 if [[ ! -e "${DST}${BACKUP_SUFFIX}" ]]; then
 
                     cp "$DST" "${DST}${BACKUP_SUFFIX}"
+                    checkstatus "cp $DST ${DST}${BACKUP_SUFFIX}"
                 fi
                 rm -f "$DST"
+                checkstatus "rm -f $DST"
                 cp "$LOCAL_PATCH_PATH" "$(dirname "$DST")/$PATCHED_JAR_FILE_NAME.jar"
+                checkstatus "cp $LOCAL_PATCH_PATH $(dirname $DST)/$PATCHED_JAR_FILE_NAME.jar"
             done
 
             cd $ARCHIVE_DIR
+            checkstatus "cd $ARCHIVE_DIR"
             tar -zcf $LOCAL_TAR_FILE *
+            checkstatus "tar -zcf $LOCAL_TAR_FILE *"
             cd ..
+            checkstatus "cd .."
 
             echo "    hadoop fs -copyFromLocal -p -f $LOCAL_TAR_FILE $HGZ"
             sudo -u $HDFS_USER hadoop fs -copyFromLocal -p -f "$LOCAL_TAR_FILE" "$HGZ"
+            checkstatus "sudo -u $HDFS_USER hadoop fs -copyFromLocal -p -f $LOCAL_TAR_FILE $HGZ"
             rm -rf $ARCHIVE_DIR
+            checkstatus "rm -rf $ARCHIVE_DIR"
             rm -f $LOCAL_TAR_FILE
+            checkstatus "rm -f $LOCAL_TAR_FILE"
         else
 
             # Rollback changes
             sudo -u $HDFS_USER hadoop fs -test -e "${HGZ}${BACKUP_SUFFIX}"
+            checkstatus "sudo -u $HDFS_USER hadoop fs -test -e ${HGZ}${BACKUP_SUFFIX}"
             if [ $? -eq 0 ]; then
 
                 echo "    hadoop fs -cp ${HGZ}${BACKUP_SUFFIX} ${HGZ}"
                 sudo -u $HDFS_USER hadoop fs -cp "${HGZ}${BACKUP_SUFFIX}" "$HGZ" 
+                checkstatus "sudo -u $HDFS_USER hadoop fs -cp ${HGZ}${BACKUP_SUFFIX} $HGZ"
                 sudo -u $HDFS_USER hadoop fs -rm "${HGZ}${BACKUP_SUFFIX}"
+                checkstatus "sudo -u $HDFS_USER hadoop fs -rm ${HGZ}${BACKUP_SUFFIX}"
             fi
         fi
     done
 fi
 echo "Finished"
-
